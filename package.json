@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-background-jobs",
+  "version": "1.0.0",
+  "description": "Background shell jobs for OpenCode: long-running commands survive the tool call and are managed with job_list / job_read / job_kill.",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "lib",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "background-jobs",
+    "shell",
+    "dev-server",
+    "jobs"
+  ],
+  "license": "MIT"
+}
