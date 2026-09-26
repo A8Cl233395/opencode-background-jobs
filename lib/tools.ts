@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS, resolveOptions, type PluginOptions, type RuntimeConfig } from "./config"
+import { DEFAULT_LIMITS, MAX_TIMEOUT_MS, resolveOptions, type PluginOptions, type RuntimeConfig } from "./config"
 import { JobLimitError, JobRegistry, type StartOutcome } from "./jobs"
 import * as describe from "./describe"
 import { resolveWorkdir, selectShell } from "./shell"
@@ -138,7 +138,12 @@ export function createBundle(input: { directory: string; options?: PluginOptions
           description:
             "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
         },
-        timeout: { type: "integer", minimum: 0, description: describe.timeoutParameter(config) },
+        timeout: {
+          type: "integer",
+          minimum: 0,
+          maximum: MAX_TIMEOUT_MS,
+          description: describe.timeoutParameter(config),
+        },
       },
       required: ["command"],
     },
@@ -146,7 +151,9 @@ export function createBundle(input: { directory: string; options?: PluginOptions
       const command = requireCommand(args)
       const workdir = optionalWorkdir(args)
       const timeout = optionalTimeout(args)
-      const waitMs = timeout === undefined ? config.inline_wait_ms : timeout
+      const requested = timeout === undefined ? config.inline_wait_ms : timeout
+      // timeout: 0 keeps its special meaning: start in the background immediately.
+      const waitMs = requested === 0 ? 0 : Math.min(requested, MAX_TIMEOUT_MS)
       const cwd = workdir ? await resolveWorkdir(workdir, config.directory, config.shell) : config.directory
 
       const outcome = await registry.start({
@@ -195,10 +202,11 @@ export function createBundle(input: { directory: string; options?: PluginOptions
           description:
             "Byte offset to read from. Omit to continue from where this session's last read of the job stopped. Pass 0 to re-read from the beginning.",
         },
-        wait_ms: {
+        timeout: {
           type: "integer",
           minimum: 0,
-          description: `Block this long (max ${config.job_read_max_wait_ms}) for new output or exit.`,
+          maximum: MAX_TIMEOUT_MS,
+          description: describe.jobReadTimeoutParameter(config),
         },
       },
       required: ["id"],
@@ -207,8 +215,8 @@ export function createBundle(input: { directory: string; options?: PluginOptions
       const id = normalizeId(args?.id)
       const offset =
         typeof args?.offset === "number" && args.offset >= 0 ? Math.floor(args.offset) : undefined
-      const requested = typeof args?.wait_ms === "number" && args.wait_ms >= 0 ? Math.floor(args.wait_ms) : 0
-      const waitMs = Math.min(requested, config.job_read_max_wait_ms)
+      const requested = typeof args?.timeout === "number" && args.timeout >= 0 ? Math.floor(args.timeout) : 0
+      const waitMs = Math.min(requested, config.job_read_max_wait_ms, MAX_TIMEOUT_MS)
       const outcome = await registry.read(ctx.sessionID, id, offset, waitMs, config.limits)
       if (!outcome) {
         throw new Error(`Unknown job id ${id}. Run job_list to see tracked jobs.`)

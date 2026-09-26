@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from "./config"
-import { inlineWaitSeconds } from "./config"
+import { inlineWaitSeconds, MAX_TIMEOUT_MS } from "./config"
 import { formatElapsed } from "./truncate"
 import { shellName } from "./shell"
 import type { JobOrigin, JobRecord } from "./jobs"
@@ -29,7 +29,11 @@ export function buildShellDescription(cfg: RuntimeConfig): string {
 }
 
 export function timeoutParameter(cfg: RuntimeConfig): string {
-  return `Timeout in milliseconds. Set to 0 to start the command in the background immediately. Defaults to ${cfg.inline_wait_ms} for foreground commands. A foreground command that reaches the timeout is moved to a background job instead of being killed.`
+  return `Timeout in milliseconds. Set to 0 to start the command in the background immediately. Defaults to ${cfg.inline_wait_ms} for foreground commands. A foreground command that reaches the timeout is moved to a background job instead of being killed. Values above ${MAX_TIMEOUT_MS} ms (15 minutes) are clamped to that hard cap.`
+}
+
+export function jobReadTimeoutParameter(cfg: RuntimeConfig): string {
+  return `Block this long for new output or exit. Defaults to 0. Values are clamped to ${cfg.job_read_max_wait_ms} ms, and every timeout is hard-capped at 15 minutes (${MAX_TIMEOUT_MS} ms).`
 }
 
 export function jobListDescription(): string {
@@ -42,7 +46,7 @@ export function jobReadDescription(cfg: RuntimeConfig): string {
 
 Reads are incremental and automatic: a read position is tracked per session and job, so calling job_read with just the id returns only the output produced since the previous read. Pass offset only to re-read from a specific byte position (0 for the whole log). The result still includes next_offset, the position where the next automatic read resumes. When the job has already exited, the result reports the exit status and returns any unread output; if more output remains unread, it says so - call job_read again to continue.
 
-If unread output is already available, the call returns immediately with it; wait_ms only blocks while there is no new output, so one call with wait_ms=${example} replaces many polling turns. The reported status is a snapshot from the moment the call returns - a job reported as running may still have exited by the time you read the result, in which case the next call reports it as exited. If the result says the job is stalled or is waiting for input it cannot receive, do not keep waiting; kill it or re-run it non-interactively.`
+If unread output is already available, the call returns immediately with it; timeout only blocks while there is no new output, so one call with timeout=${example} replaces many polling turns. The reported status is a snapshot from the moment the call returns - a job reported as running may still have exited by the time you read the result, in which case the next call reports it as exited. If the result says the job is stalled or is waiting for input it cannot receive, do not keep waiting; kill it or re-run it non-interactively.`
 }
 
 export function jobKillDescription(): string {

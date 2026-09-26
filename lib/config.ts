@@ -34,6 +34,10 @@ export const DEFAULTS: ResolvedOptions = {
 
 export const DEFAULT_LIMITS = { maxLines: 2000, maxBytes: 50 * 1024 }
 
+// Hard ceiling for every user-facing timeout and for the options that feed
+// them: shell.timeout, job_read.timeout, inline_wait_ms, job_read_max_wait_ms.
+export const MAX_TIMEOUT_MS = 15 * 60_000
+
 const ENV = {
   inline_wait_ms: "OPENCODE_BASH_BG_INLINE_WAIT_MS",
   max_jobs: "OPENCODE_BASH_BG_MAX_JOBS",
@@ -77,13 +81,19 @@ export function resolveOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedOptions {
   return {
-    inline_wait_ms: pickNumber("inline_wait_ms", options, env, 0) ?? DEFAULTS.inline_wait_ms,
+    inline_wait_ms: Math.min(
+      pickNumber("inline_wait_ms", options, env, 0) ?? DEFAULTS.inline_wait_ms,
+      MAX_TIMEOUT_MS,
+    ),
     max_jobs: pickNumber("max_jobs", options, env, 1) ?? DEFAULTS.max_jobs,
     log_max_bytes: pickNumber("log_max_bytes", options, env, 0) ?? DEFAULTS.log_max_bytes,
     log_retain: pickNumber("log_retain", options, env, 1) ?? DEFAULTS.log_retain,
     stall_after_ms: pickNumber("stall_after_ms", options, env, 1) ?? DEFAULTS.stall_after_ms,
     exit_settle_ms: pickNumber("exit_settle_ms", options, env, 0) ?? DEFAULTS.exit_settle_ms,
-    job_read_max_wait_ms: pickNumber("job_read_max_wait_ms", options, env, 0) ?? DEFAULTS.job_read_max_wait_ms,
+    job_read_max_wait_ms: Math.min(
+      pickNumber("job_read_max_wait_ms", options, env, 0) ?? DEFAULTS.job_read_max_wait_ms,
+      MAX_TIMEOUT_MS,
+    ),
     example_wait_ms: pickNumber("example_wait_ms", options, env, 0) ?? DEFAULTS.example_wait_ms,
     job_ttl_ms: pickNumber("job_ttl_ms", options, env, 0) ?? DEFAULTS.job_ttl_ms,
     kill_on_session_end: pickBoolean("kill_on_session_end", options, env) ?? DEFAULTS.kill_on_session_end,

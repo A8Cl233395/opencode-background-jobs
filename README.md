@@ -11,9 +11,9 @@ and adds three companion tools to manage those jobs.
 
 | Tool | Description |
 |---|---|
-| `shell` | Same interface as the built-in shell tool (`command`, `workdir`, `timeout`), with one behavioral change: a foreground command that does not finish within the wait window is **moved to a background job instead of being killed**, and the tool returns a job receipt. `timeout: 0` starts a command in the background immediately. |
+| `shell` | Same interface as the built-in shell tool (`command`, `workdir`, `timeout`), with one behavioral change: a foreground command that does not finish within the wait window is **moved to a background job instead of being killed**, and the tool returns a job receipt. `timeout: 0` starts a command in the background immediately; all timeouts are hard-capped at 15 minutes. |
 | `job_list` | List the session's jobs: id, command, status (running / exited / killed), elapsed time and exit code. |
-| `job_read` | Read job output incrementally. A per-session read position is tracked per job, so successive reads return only new output; `offset: 0` re-reads from the beginning, and `wait_ms` blocks for new output or exit. |
+| `job_read` | Read job output incrementally. A per-session read position is tracked per job, so successive reads return only new output; `offset: 0` re-reads from the beginning, and `timeout` blocks for new output or exit. |
 | `job_kill` | Stop a job with its child processes (whole process group on Unix, tree kill on Windows) and return the final status plus any unread output. |
 
 Jobs are tracked per session and live for the current OpenCode instance.
@@ -42,19 +42,20 @@ variable:
 
 | Option | Environment | Default | Description |
 |---|---|---|---|
-| `inline_wait_ms` | `OPENCODE_BASH_BG_INLINE_WAIT_MS` | `30000` | How long a foreground command may run before it is promoted to a background job. |
+| `inline_wait_ms` | `OPENCODE_BASH_BG_INLINE_WAIT_MS` | `30000` | How long a foreground command may run before it is promoted to a background job (hard-capped at 15 minutes). |
 | `max_jobs` | `OPENCODE_BASH_BG_MAX_JOBS` | `8` | Maximum number of concurrently running jobs; starting one more raises a job-limit error. |
 | `log_max_bytes` | `OPENCODE_BASH_BG_LOG_MAX_BYTES` | `67108864` (64 MiB) | Output cap for a promoted job; when exceeded the job is killed and flagged as truncated. `0` disables the cap. |
 | `log_retain` | `OPENCODE_BASH_BG_LOG_RETAIN` | `20` | How many finished job records/logs are kept; older ones are pruned. |
 | `stall_after_ms` | `OPENCODE_BASH_BG_STALL_AFTER_MS` | `30000` | A running job with no output for this long is reported as *stalled*. |
 | `exit_settle_ms` | `OPENCODE_BASH_BG_EXIT_SETTLE_MS` | `200` | Grace period after process exit before the final output and status are recorded. |
-| `job_read_max_wait_ms` | `OPENCODE_BASH_BG_JOB_READ_MAX_WAIT_MS` | `60000` | Upper bound for the `wait_ms` argument of `job_read`. |
+| `job_read_max_wait_ms` | `OPENCODE_BASH_BG_JOB_READ_MAX_WAIT_MS` | `60000` | Upper bound for the `timeout` argument of `job_read` (hard-capped at 15 minutes). |
 | `example_wait_ms` | `OPENCODE_BASH_BG_EXAMPLE_WAIT_MS` | `5000` | Example wait value shown in the generated `job_read` tool description. |
 | `job_ttl_ms` | `OPENCODE_BASH_BG_JOB_TTL_MS` | `0` | Maximum lifetime of a background job; when it expires the job is killed with reason `ttl`. `0` disables the limit. |
 | `kill_on_session_end` | `OPENCODE_BASH_BG_KILL_ON_SESSION_END` | `false` | Kill a session's jobs when that session is deleted. |
 
 ## Notes
 
+- All timeouts are hard-capped at 15 minutes: `shell.timeout`, `job_read.timeout`, `inline_wait_ms` and `job_read_max_wait_ms` are clamped to 900000 ms.
 - Large outputs spill from memory to a file under the OpenCode data directory
   (`$XDG_DATA_HOME/opencode/tool-output`, by default
   `~/.local/share/opencode/tool-output`), and `job_read` keeps reading them
