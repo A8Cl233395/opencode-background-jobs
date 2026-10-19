@@ -5,7 +5,7 @@ import { ensureDir, newTruncationFilePath, truncationDir } from "./paths"
 import { isGroupAlive, isPidAlive, killProcessTree, sleep, spawnCommand } from "./spawn"
 import { preview, readChunkFrom, readChunkFromBuffer, readTailBytes, tail } from "./truncate"
 
-export type JobOrigin = "auto" | "explicit" | "abort"
+export type JobOrigin = "auto" | "explicit"
 export type JobStatus = "running" | "exited" | "killed"
 
 export type JobRecord = {
@@ -31,6 +31,7 @@ export type JobRecord = {
   logTruncated: boolean
   logLimitHit: boolean
   killReason: "user" | "log_limit" | "ttl" | null
+  spawnError: string | null
   buffer: Buffer[]
 }
 
@@ -87,8 +88,10 @@ export type StartOutcome =
       record: JobRecord
       elapsedMs: number
       origin: JobOrigin
-      tail: string
       groupSurvivors: boolean | null
+    }
+  | {
+      kind: "aborted"
     }
 
 export type ReadOutcome = {
@@ -131,9 +134,16 @@ export class JobRegistry {
 
   constructor(private opts: RegistryOptions) {}
 
-  runningCount(): number {
-    let count = this.pending.size
-    for (const record of this.records.values()) if (record.status === "running") count++
+  runningCount(sessionID?: string): number {
+    let count = 0
+    for (const live of this.pending) {
+      if (sessionID === undefined || live.record.sessionID === sessionID) count++
+    }
+    for (const record of this.records.values()) {
+      if (record.status !== "running") continue
+      if (sessionID !== undefined && record.sessionID !== sessionID) continue
+      count++
+    }
     return count
   }
 
@@ -167,7 +177,8 @@ export class JobRegistry {
   }
 
   async start(input: StartInput): Promise<StartOutcome> {
-    const running = this.runningCount()
+    if (input.abort?.aborted) return { kind: "aborted" }
+    const running = this.runningCount(input.sessionID)
     if (running >= this.opts.maxJobs) throw new JobLimitError(running, this.opts.maxJobs)
 
     const now = Date.now()
@@ -194,6 +205,7 @@ export class JobRegistry {
       logTruncated: false,
       logLimitHit: false,
       killReason: null,
+      spawnError: null,
       buffer: [],
     }
 
@@ -237,10 +249,11 @@ export class JobRegistry {
       this.markExited(live)
       resolveSettle()
     })
-    child.once("error", () => {
+    child.once("error", (error) => {
       live.exited = true
       live.exitCode = null
       live.signal = null
+      record.spawnError = error instanceof Error ? error.message : String(error)
       this.markExited(live)
       resolveSettle()
     })
@@ -254,7 +267,6 @@ export class JobRegistry {
         record: promoted,
         elapsedMs: Date.now() - promoted.startedAt,
         origin: "explicit",
-        tail: this.jobTail(promoted),
         groupSurvivors: null,
       }
     }
@@ -270,13 +282,15 @@ export class JobRegistry {
       }
       const timer = setTimeout(() => done("timeout"), Math.max(0, input.waitMs))
       const onAbort = () => done("abort")
-      input.abort?.addEventListener("abort", onAbort, { once: true })
       live.settle.then(() => done("exit"))
+      if (input.abort?.aborted) onAbort()
+      else input.abort?.addEventListener("abort", onAbort, { once: true })
     })
     if (live.exited) outcome = "exit"
+    else if (input.abort?.aborted) outcome = "abort"
 
     if (outcome === "exit") {
-      await sleep(200)
+      await sleep(this.opts.exitSettleMs)
       this.cleanupLive(live)
       this.pending.delete(live)
       record.status = "exited"
@@ -293,14 +307,30 @@ export class JobRegistry {
       }
     }
 
-    const origin: JobOrigin = outcome === "abort" ? "abort" : "auto"
-    const promoted = this.promote(live, origin)
+    if (outcome === "abort") {
+      // Aborting the tool call must stop the command it started: never leave an
+      // untracked process behind when the user presses Ctrl+C.
+      live.previewActive = false
+      record.status = "killed"
+      record.killReason = "user"
+      record.updatedAt = Date.now()
+      await killProcessTree(record.pid, () => isPidAlive(record.pid))
+      await Promise.race([live.settle, sleep(3000)])
+      this.cleanupLive(live)
+      this.pending.delete(live)
+      record.exitCode = live.exitCode
+      record.signal = live.signal
+      record.completedAt = record.completedAt ?? Date.now()
+      record.updatedAt = Date.now()
+      return { kind: "aborted" }
+    }
+
+    const promoted = this.promote(live, "auto")
     return {
       kind: "job",
       record: promoted,
       elapsedMs: Date.now() - record.startedAt,
-      origin,
-      tail: this.jobTail(promoted),
+      origin: "auto",
       groupSurvivors: null,
     }
   }
@@ -397,7 +427,7 @@ export class JobRegistry {
   }
 
   private async finalize(live: Live): Promise<void> {
-    await sleep(200)
+    await sleep(this.opts.exitSettleMs)
     this.cleanupLive(live)
     if (live.ttlTimer) clearTimeout(live.ttlTimer)
     const record = live.record
@@ -450,6 +480,21 @@ export class JobRegistry {
     return tail(raw, maxLines, maxBytes).text
   }
 
+  // Full-output view for the /jobs dialog. Reads an explicit byte window
+  // without touching the per-session read cursors that job_read owns, so
+  // opening the viewer never consumes output the model has not read yet.
+  jobOutput(record: JobRecord, maxBytes: number): { text: string; bytes: number; truncated: boolean } {
+    const start = Math.max(0, record.bytes - maxBytes)
+    if (record.spilled && record.filePath) {
+      return { text: readTailBytes(record.filePath, maxBytes).text, bytes: record.bytes, truncated: start > 0 }
+    }
+    return {
+      text: readChunkFromBuffer(record.buffer, record.bytes, start, maxBytes, 0).text,
+      bytes: record.bytes,
+      truncated: start > 0,
+    }
+  }
+
   groupSurvivors(id: string): boolean | null {
     const record = this.records.get(id)
     if (!record) return null
@@ -465,6 +510,10 @@ export class JobRegistry {
 
   private cursorKey(sessionID: string, id: string): string {
     return `${sessionID}\n${id}`
+  }
+
+  private advanceCursor(sessionID: string, id: string, offset: number): void {
+    this.cursors.set(this.cursorKey(sessionID, id), Math.max(0, offset))
   }
 
   async read(
@@ -491,7 +540,7 @@ export class JobRegistry {
       const silentForMs = Math.max(0, Date.now() - record.lastOutputAt)
       const alive = this.isAlive(record)
       if (chunk.text.length > 0) {
-        this.cursors.set(cursor, chunk.nextOffset)
+        this.advanceCursor(sessionID, id, chunk.nextOffset)
         const running = alive ? await this.settleRunning(record) : false
         return {
           record,

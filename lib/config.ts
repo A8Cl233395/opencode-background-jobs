@@ -8,6 +8,7 @@ export type ResolvedOptions = {
   stall_after_ms: number
   exit_settle_ms: number
   job_read_max_wait_ms: number
+  job_read_default_wait_ms: number
   example_wait_ms: number
   job_ttl_ms: number
   kill_on_session_end: boolean
@@ -27,12 +28,19 @@ export const DEFAULTS: ResolvedOptions = {
   stall_after_ms: 30_000,
   exit_settle_ms: 200,
   job_read_max_wait_ms: 60_000,
+  job_read_default_wait_ms: 5_000,
   example_wait_ms: 5_000,
   job_ttl_ms: 0,
   kill_on_session_end: false,
 }
 
 export const DEFAULT_LIMITS = { maxLines: 2000, maxBytes: 50 * 1024 }
+
+// timeout: 0 promotes the command to a background job immediately, then runs
+// one automatic read with this budget. A command that finishes or produces
+// output within the window is returned by the same `shell` call instead of
+// costing a follow-up `job_read` request.
+export const EXPLICIT_BACKGROUND_READ_MS = 3_000
 
 // Hard ceiling for every user-facing timeout and for the options that feed
 // them: shell.timeout, job_read.timeout, inline_wait_ms, job_read_max_wait_ms.
@@ -46,6 +54,7 @@ const ENV = {
   stall_after_ms: "OPENCODE_BASH_BG_STALL_AFTER_MS",
   exit_settle_ms: "OPENCODE_BASH_BG_EXIT_SETTLE_MS",
   job_read_max_wait_ms: "OPENCODE_BASH_BG_JOB_READ_MAX_WAIT_MS",
+  job_read_default_wait_ms: "OPENCODE_BASH_BG_JOB_READ_DEFAULT_WAIT_MS",
   example_wait_ms: "OPENCODE_BASH_BG_EXAMPLE_WAIT_MS",
   job_ttl_ms: "OPENCODE_BASH_BG_JOB_TTL_MS",
   kill_on_session_end: "OPENCODE_BASH_BG_KILL_ON_SESSION_END",
@@ -92,6 +101,10 @@ export function resolveOptions(
     exit_settle_ms: pickNumber("exit_settle_ms", options, env, 0) ?? DEFAULTS.exit_settle_ms,
     job_read_max_wait_ms: Math.min(
       pickNumber("job_read_max_wait_ms", options, env, 0) ?? DEFAULTS.job_read_max_wait_ms,
+      MAX_TIMEOUT_MS,
+    ),
+    job_read_default_wait_ms: Math.min(
+      pickNumber("job_read_default_wait_ms", options, env, 0) ?? DEFAULTS.job_read_default_wait_ms,
       MAX_TIMEOUT_MS,
     ),
     example_wait_ms: pickNumber("example_wait_ms", options, env, 0) ?? DEFAULTS.example_wait_ms,

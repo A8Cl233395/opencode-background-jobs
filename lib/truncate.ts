@@ -112,7 +112,8 @@ export function readChunkFrom(
   if (read === 0) return { text: "", nextOffset: offset, eof: true }
   const text = decodeBounded(buf.subarray(0, read), maxLines)
   const consumed = Buffer.byteLength(text, "utf-8")
-  const next = offset + Math.max(consumed, 1)
+  const advance = Math.min(Math.max(consumed, 1), read)
+  const next = offset + advance
   return { text, nextOffset: next, eof: next >= size }
 }
 
@@ -144,7 +145,8 @@ export function readChunkFromBuffer(
   if (used === 0) return { text: "", nextOffset: offset, eof: offset >= total }
   const text = decodeBounded(Buffer.concat(gathered, used), maxLines)
   const consumed = Buffer.byteLength(text, "utf-8")
-  const next = offset + Math.max(consumed, 1)
+  const advance = Math.min(Math.max(consumed, 1), used)
+  const next = offset + advance
   return { text, nextOffset: next, eof: next >= total }
 }
 

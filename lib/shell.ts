@@ -143,14 +143,25 @@ export function unquote(text: string): string {
 
 export async function resolveWorkdir(text: string, root: string, shell: string): Promise<string> {
   const expanded = unquote(text)
+  let resolved: string
   if (process.platform === "win32") {
+    let converted: string | undefined
     if (isPosix(shell) && expanded.startsWith("/") && windowsPath(expanded) === expanded) {
-      const converted = await cygpath(shell, expanded)
-      if (converted) return converted
+      converted = await cygpath(shell, expanded)
     }
-    return path.resolve(root, windowsPath(home(expanded)))
+    resolved = converted ?? path.resolve(root, windowsPath(home(expanded)))
+  } else {
+    resolved = path.resolve(root, home(expanded))
   }
-  return path.resolve(root, home(expanded))
+  let stat: ReturnType<typeof fs.statSync> | undefined
+  try {
+    stat = fs.statSync(resolved)
+  } catch {
+    stat = undefined
+  }
+  if (!stat) throw new Error(`Working directory does not exist: ${resolved}`)
+  if (!stat.isDirectory()) throw new Error(`Working directory is not a directory: ${resolved}`)
+  return resolved
 }
 
 async function cygpath(shell: string, text: string): Promise<string | undefined> {
