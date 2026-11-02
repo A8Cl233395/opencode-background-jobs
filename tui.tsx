@@ -143,6 +143,10 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
   const [output, setOutput] = createSignal<JobOutputView>()
   const [outputError, setOutputError] = createSignal("")
   const [clock, setClock] = createSignal(Date.now())
+  let listScroll: ScrollBoxRenderable | undefined
+  // The job list opens pinned to the newest job and keeps following the tail
+  // until the user navigates or scrolls on their own.
+  let followTail = true
   let outputScroll: ScrollBoxRenderable | undefined
   let outputDone = false
 
@@ -151,7 +155,8 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
       const result = await rpc.list({ sessionID: props.sessionID }, callOptions())
       setState(result)
       setError("")
-      if (selected() >= result.jobs.length) setSelected(Math.max(0, result.jobs.length - 1))
+      if (followTail && result.jobs.length > 0) setSelected(result.jobs.length - 1)
+      else if (selected() >= result.jobs.length) setSelected(Math.max(0, result.jobs.length - 1))
     } catch (caught) {
       setError(errorText(caught))
     }
@@ -213,6 +218,16 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
   const count = () => state()?.jobs.length ?? 0
   const current = () => state()?.jobs[Math.min(selected(), Math.max(0, count() - 1))]
 
+  // The list has a single cursor: keys move the selection and the scrollbox
+  // follows it, so the highlighted job is always on screen.
+  const moveSelection = (delta: number) => {
+    followTail = false
+    const next = Math.max(0, Math.min(Math.max(0, count() - 1), selected() + delta))
+    setSelected(next)
+    const job = state()?.jobs[next]
+    if (job) listScroll?.scrollChildIntoView(`job-${job.id}`)
+  }
+
   const killSelected = async () => {
     const job = current()
     if (!job || job.status !== "running") return
@@ -259,6 +274,9 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
   // Matches the built-in shell output dialog: a viewport tall enough to read a
   // log while staying inside small terminals.
   const outputHeight = () => Math.max(3, Math.floor(dimensions().height * 0.6) - 6)
+  // The job list scrolls instead of overflowing the dialog; the cap keeps the
+  // dialog (header, subtitle, list, footer) inside the terminal on every resize.
+  const listHeight = () => Math.max(3, Math.floor(dimensions().height * 0.5) - 6)
   const outputSubtitle = () => {
     const job = viewing()
     if (!job) return ""
@@ -309,8 +327,38 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
             if (job) openOutput(job)
           },
         },
-        { bind: "up", run: () => setSelected((value) => Math.max(0, value - 1)) },
-        { bind: "down", run: () => setSelected((value) => Math.min(count() - 1, value + 1)) },
+        { bind: "up", run: () => moveSelection(-1) },
+        { bind: "down", run: () => moveSelection(1) },
+        {
+          bind: "pageup",
+          run: () => {
+            followTail = false
+            listScroll?.scrollBy(-listHeight())
+          },
+        },
+        {
+          bind: "pagedown",
+          run: () => {
+            followTail = false
+            listScroll?.scrollBy(listHeight())
+          },
+        },
+        {
+          bind: "home",
+          run: () => {
+            followTail = false
+            listScroll?.scrollTo(0)
+          },
+        },
+        {
+          bind: "end",
+          run: () => {
+            // "end follow": jump back to the newest job and resume tailing.
+            followTail = true
+            setSelected(Math.max(0, count() - 1))
+            listScroll?.scrollTo(Infinity)
+          },
+        },
         { bind: "k", run: () => void killSelected() },
       ],
     }
@@ -396,44 +444,58 @@ function JobsDialog(props: { ctx: Ctx; sessionID: string; p: Palette; close: () 
             <text fg={p.muted}>No background jobs in this session.</text>
           </box>
         </Show>
-        <For each={state()?.jobs ?? []}>
-          {(job, index) => {
-            const active = () => selected() === index()
-            const elapsed = formatElapsed(
-              (job.status === "running" ? Date.now() : job.completedAt ?? Date.now()) - job.startedAt,
-            )
-            return (
-              <box flexDirection="column" flexShrink={0}>
-                <box flexDirection="row" height={1} flexShrink={0}>
-                  <text
-                    attributes={active() ? TextAttributes.BOLD : undefined}
-                    fg={active() ? p.base : p.muted}
-                    wrapMode="none"
-                  >
-                    {`${active() ? "▶ " : "  "}#${job.id}`.padEnd(7)}
-                  </text>
-                  <text attributes={active() ? TextAttributes.BOLD : undefined} fg={statusColor(job, p)} wrapMode="none">
-                    {statusLabel(job).padEnd(15)}
-                  </text>
-                  <text attributes={active() ? TextAttributes.BOLD : undefined} fg={p.muted} wrapMode="none">
-                    {`${elapsed.padEnd(7)}  ${humanBytes(job.bytes).padEnd(9)}  `}
-                  </text>
-                  <text attributes={active() ? TextAttributes.BOLD : undefined} fg={p.base} wrapMode="none">
-                    {displayCommand(job.command)}
-                  </text>
-                </box>
-                <Show when={job.preview}>
-                  <text fg={p.muted} wrapMode="none">
-                    {`    ${job.preview}`}
-                  </text>
-                </Show>
-              </box>
-            )
-          }}
-        </For>
+        <Show when={count() > 0}>
+          <scrollbox
+            ref={(element: ScrollBoxRenderable) => (listScroll = element)}
+            height={listHeight()}
+            stickyScroll
+            stickyStart="bottom"
+            scrollbarOptions={{ visible: false }}
+            contentOptions={{ gap: 1 }}
+            onMouseScroll={() => {
+              followTail = false
+            }}
+          >
+            <For each={state()?.jobs ?? []}>
+              {(job, index) => {
+                const active = () => selected() === index()
+                const elapsed = formatElapsed(
+                  (job.status === "running" ? Date.now() : job.completedAt ?? Date.now()) - job.startedAt,
+                )
+                return (
+                  <box id={`job-${job.id}`} flexDirection="column" flexShrink={0}>
+                    <box flexDirection="row" height={1} flexShrink={0}>
+                      <text
+                        attributes={active() ? TextAttributes.BOLD : undefined}
+                        fg={active() ? p.base : p.muted}
+                        wrapMode="none"
+                      >
+                        {`${active() ? "▶ " : "  "}#${job.id}`.padEnd(7)}
+                      </text>
+                      <text attributes={active() ? TextAttributes.BOLD : undefined} fg={statusColor(job, p)} wrapMode="none">
+                        {statusLabel(job).padEnd(15)}
+                      </text>
+                      <text attributes={active() ? TextAttributes.BOLD : undefined} fg={p.muted} wrapMode="none">
+                        {`${elapsed.padEnd(7)}  ${humanBytes(job.bytes).padEnd(9)}  `}
+                      </text>
+                      <text attributes={active() ? TextAttributes.BOLD : undefined} fg={p.base} wrapMode="none">
+                        {displayCommand(job.command)}
+                      </text>
+                    </box>
+                    <Show when={job.preview}>
+                      <text fg={p.muted} wrapMode="none">
+                        {`    ${job.preview}`}
+                      </text>
+                    </Show>
+                  </box>
+                )
+              }}
+            </For>
+          </scrollbox>
+        </Show>
         <box flexDirection="row" justifyContent="space-between" paddingBottom={1}>
           <Show when={count() > 0} fallback={<box />}>
-            <text fg={p.muted}>↑↓ select · enter output · k kill running</text>
+            <text fg={p.muted}>↑↓ select · pgup/pgdn scroll · enter output · k kill</text>
           </Show>
           <box
             paddingLeft={3}
